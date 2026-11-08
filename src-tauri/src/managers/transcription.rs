@@ -246,6 +246,12 @@ pub struct TranscriptionManager {
     /// The transcribe-cpp engine: owns the worker process, its model, and
     /// recovery from crashes and hangs.
     engine: EngineSupervisor,
+    /// Fork feature: a second worker that holds the "final pass" model
+    /// (see `AppSettings::final_pass_model`). Idle unless that setting is on
+    /// and the selected model streams.
+    final_engine: EngineSupervisor,
+    /// Which model `final_engine` holds; the lock also serialises its loads.
+    final_model_id: Arc<Mutex<Option<String>>>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
     current_model_id: Arc<Mutex<Option<String>>>,
@@ -284,6 +290,8 @@ impl TranscriptionManager {
     pub fn new(app_handle: &AppHandle, model_manager: Arc<ModelManager>) -> Result<Self> {
         let manager = Self {
             engine: EngineSupervisor::new(!transcribe_gpu_disabled_for_host()),
+            final_engine: EngineSupervisor::new(!transcribe_gpu_disabled_for_host()),
+            final_model_id: Arc::new(Mutex::new(None)),
             model_manager,
             app_handle: app_handle.clone(),
             current_model_id: Arc::new(Mutex::new(None)),
@@ -467,6 +475,10 @@ impl TranscriptionManager {
     /// it. Only the worker's exit is left to wait for.
     fn begin_unload(&self) -> Unloading {
         let unloading = self.engine.unload();
+        // The final-pass worker goes with the main model; its exit is not
+        // waited for.
+        drop(self.final_engine.unload());
+        *self.final_model_id.lock().unwrap() = None;
         self.language_detector.unload();
         {
             let mut current_model = self.current_model_id.lock().unwrap();
@@ -870,6 +882,11 @@ impl TranscriptionManager {
             caps.supports_translate,
             caps.languages,
         );
+        if caps.supports_streaming {
+            // Warm the final-pass model while the user is still talking, so
+            // releasing the key does not wait for it to load.
+            self.preload_final_model();
+        }
         let mode = live_decode(
             ModelTraits::of(&info),
             get_settings(&self.app_handle).long_form_chunking,
@@ -949,6 +966,7 @@ impl TranscriptionManager {
     /// worker for it.
     pub fn cancel_transcription(&self) {
         self.engine.cancel();
+        self.final_engine.cancel();
     }
 
     /// Emit a working-phase event to the streaming overlay (spinner + label).
@@ -971,7 +989,117 @@ impl TranscriptionManager {
     pub fn transcribe_recording(&self, samples: Vec<f32>) -> Result<Transcription> {
         let started = Instant::now();
         let live = self.finalize_live(samples.len())?;
+        // Fork feature: the streaming model drew the live preview; a more
+        // accurate model re-decodes the whole recording for the pasted text.
+        if let Some(final_id) = self.final_pass_target() {
+            match self.decode_final(&final_id, samples.clone()) {
+                Ok(outcome) => return self.complete(started, samples, Some(outcome)),
+                Err(e) => warn!(
+                    "Final pass with '{}' failed ({e:#}); keeping the live model's text",
+                    final_id
+                ),
+            }
+        }
         self.complete(started, samples, live)
+    }
+
+    /// The model that should re-decode this recording, if the final-pass
+    /// feature applies: it is set, differs from the loaded model, and the
+    /// loaded model is a streaming one (otherwise there is no live draft and
+    /// the normal batch path already runs the selected model).
+    fn final_pass_target(&self) -> Option<String> {
+        let id = get_settings(&self.app_handle)
+            .final_pass_model
+            .filter(|m| !m.is_empty())?;
+        if self.get_current_model().as_deref() == Some(id.as_str()) {
+            return None;
+        }
+        if !self.engine.loaded()?.capabilities.supports_streaming {
+            return None;
+        }
+        let info = self.model_manager.get_model_info(&id)?;
+        info.is_downloaded.then_some(id)
+    }
+
+    /// Start loading the final-pass model in the background, if one applies.
+    fn preload_final_model(&self) {
+        let Some(id) = self.final_pass_target() else {
+            return;
+        };
+        let manager = self.clone();
+        thread::spawn(move || {
+            if let Err(e) = manager.ensure_final_model(&id) {
+                warn!("Final-pass model '{id}' failed to preload: {e:#}");
+            }
+        });
+    }
+
+    /// Make `final_engine` hold `model_id`, loading it if it does not yet.
+    fn ensure_final_model(&self, model_id: &str) -> Result<LoadedInfo> {
+        let mut current = self.final_model_id.lock().unwrap();
+        if current.as_deref() == Some(model_id) {
+            if let Some(info) = self.final_engine.loaded() {
+                return Ok(info);
+            }
+        }
+        *current = None;
+        let path = self.model_manager.get_model_path(model_id)?;
+        let settings = get_settings(&self.app_handle);
+        let (backend, device) = match resolve_gpu_device(
+            settings.transcribe_accelerator,
+            settings.transcribe_gpu_device.as_deref(),
+        ) {
+            Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
+            None => (
+                select_transcribe_backend(settings.transcribe_accelerator),
+                DeviceSelector::Auto,
+            ),
+        };
+        let started = Instant::now();
+        let info = self
+            .final_engine
+            .load(LoadSpec {
+                path,
+                backend,
+                device,
+            })
+            .map_err(engine_error)?;
+        info!(
+            "Final-pass model '{}' loaded in {}ms (backend '{}')",
+            model_id,
+            started.elapsed().as_millis(),
+            info.backend
+        );
+        *current = Some(model_id.to_string());
+        Ok(info)
+    }
+
+    /// Decode a whole recording with the final-pass model in a single run.
+    fn decode_final(&self, model_id: &str, audio: Vec<f32>) -> Result<RunOutcome> {
+        let info = self.ensure_final_model(model_id)?;
+        let mark = self.final_engine.cancel_mark();
+        let settings = get_settings(&self.app_handle);
+        if !matches!(
+            batch_decode(ModelTraits::of(&info), settings.long_form_chunking),
+            BatchDecode::Whole
+        ) {
+            return Err(anyhow::anyhow!(
+                "model '{model_id}' needs chunked decoding, which the final pass does not do"
+            ));
+        }
+        let plan = self.language_plan(&settings, model_id, &info);
+        let setup = self.setup_for(&info, &settings, &plan, &audio);
+        self.touch_activity();
+        let transcript = self
+            .final_engine
+            .transcribe_since(mark, audio, setup.run_options.clone())
+            .map_err(engine_error)?;
+        let (text, model_detected_language) = join_chunks(vec![transcript]);
+        Ok(RunOutcome {
+            setup,
+            text,
+            model_detected_language,
+        })
     }
 
     /// The final text of one transcription, from its live result or else a

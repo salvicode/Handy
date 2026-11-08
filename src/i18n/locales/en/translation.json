@@ -594,6 +594,11 @@
         "title": "Voice Activity Detection",
         "description": "Filter silence from recordings. Streaming-capable models use a longer VAD tail; disabling VAD records raw audio."
       },
+      "finalPassModel": {
+        "title": "Final Pass Model",
+        "description": "With a streaming model selected, this model re-transcribes the whole recording after you release the key, and its text is what gets pasted. The streaming model only draws the live preview. Pick a downloaded, more accurate model such as Whisper.",
+        "none": "Off (keep the streaming text)"
+      },
       "longFormChunking": {
         "title": "Long Audio Chunking",
         "description": "Splits long recordings at pauses before transcribing, which typically improves transcription performance. Transcribed files and long re-transcriptions are always split."

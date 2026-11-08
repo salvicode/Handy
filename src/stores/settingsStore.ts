@@ -209,6 +209,8 @@ const settingUpdaters: {
     commands.changeTranscribeAcceleratorSetting(
       value as TranscribeAcceleratorSetting,
     ),
+  final_pass_model: (value) =>
+    commands.changeFinalPassModelSetting(value as string | null),
   transcribe_gpu_device: (value) =>
     commands.changeTranscribeGpuDevice(value as string | null),
   extra_recording_buffer_ms: (value) =>

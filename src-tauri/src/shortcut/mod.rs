@@ -1520,6 +1520,20 @@ pub fn change_transcribe_accelerator_setting(
     Ok(())
 }
 
+/// Set (or clear with `None`) the model that re-decodes a streaming
+/// recording for its final text.
+#[tauri::command]
+#[specta::specta]
+pub fn change_final_pass_model_setting(
+    app: AppHandle,
+    model: Option<String>,
+) -> Result<(), String> {
+    let mut s = settings::get_settings(&app);
+    s.final_pass_model = model.filter(|m| !m.is_empty());
+    settings::write_settings(&app, s);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn change_transcribe_gpu_device(app: AppHandle, device: Option<String>) -> Result<(), String> {

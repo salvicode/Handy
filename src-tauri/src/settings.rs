@@ -536,6 +536,12 @@ pub struct AppSettings {
     /// in `apply_settings_migrations`.
     #[serde(default)]
     pub chinese_script: ChineseScript,
+    /// Fork feature: when the selected model is a streaming one (live preview
+    /// in the overlay), this model re-decodes the whole recording after the
+    /// key is released and its text is what gets pasted. `None` keeps the
+    /// streaming model's own final text.
+    #[serde(default)]
+    pub final_pass_model: Option<String>,
     #[serde(default)]
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
     /// Stable transcribe.cpp device selector. This is derived from the backend's
@@ -1058,6 +1064,7 @@ pub fn get_default_settings() -> AppSettings {
         filler_word_removal_enabled: default_filler_word_removal_enabled(),
         custom_filler_words: None,
         chinese_script: default_chinese_script(),
+        final_pass_model: None,
         transcribe_accelerator: TranscribeAcceleratorSetting::default(),
         transcribe_gpu_device: default_transcribe_gpu_device(),
         extra_recording_buffer_ms: 0,

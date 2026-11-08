@@ -499,6 +499,14 @@ async changeTranscribeAcceleratorSetting(accelerator: TranscribeAcceleratorSetti
     else return { status: "error", error: e  as any };
 }
 },
+async changeFinalPassModelSetting(model: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_final_pass_model_setting", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeTranscribeGpuDevice(device: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_transcribe_gpu_device", { device }) };
@@ -1143,7 +1151,7 @@ reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: strin
  * Fresh installs default from the OS locale; existing stores are migrated
  * in `apply_settings_migrations`.
  */
-chinese_script?: ChineseScript; transcribe_accelerator?: TranscribeAcceleratorSetting; 
+chinese_script?: ChineseScript; final_pass_model?: string | null; transcribe_accelerator?: TranscribeAcceleratorSetting; 
 /**
  * Stable transcribe.cpp device selector. This is derived from the backend's
  * `device_id` when available (or its name for backends such as Metal),
