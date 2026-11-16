@@ -31,4 +31,4 @@ machines. Build with a local override instead of editing the repo:
 
 `bun run tauri build --config <file>` where the file contains
 `{"bundle":{"createUpdaterArtifacts":false,"targets":["nsis"],"windows":{"signCommand":null}}}`.
-The installer is unsigned, so SmartScreen may warn. See `docs/SETUP_PROMPT.md` for the full procedure.
+The installer is unsigned, so SmartScreen may warn. See `docs/SETUP_PROMPT.md` (Windows) and `docs/SETUP_PROMPT_MACOS.md` (macOS) for the full procedure.
